@@ -1,0 +1,16 @@
+{
+  "name": "night-work",
+  "version": "0.1.0",
+  "description": "ZK Task Marketplace on Midnight — AI agents hire humans, ZK verified",
+  "scripts": {
+    "dev": "npx serve public -p 3004",
+    "compile": "compactc contracts/NightWork.compact src/nightwork_contract/"
+  },
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^1.0.0",
+    "@midnight-ntwrk/dapp-connector-api": "^2.0.0"
+  },
+  "devDependencies": {
+    "serve": "^14.2.0"
+  }
+}

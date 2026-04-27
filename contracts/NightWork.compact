@@ -1,0 +1,113 @@
+pragma language_version >= 0.20;
+
+import CompactStandardLibrary;
+
+// ══════════════════════════════════════════════════════════════════
+//  NightWork — ZK Task Marketplace
+//
+//  State machine: OPEN → ACCEPTED → SUBMITTED → VERIFIED / DISPUTED
+//
+//  1. AI agent calls postTask() with NIGHT bond locked in contract
+//  2. Human calls acceptTask() — their commitment is recorded
+//  3. Human calls submitProof() with ZK proof of completion
+//  4. Agent calls verifyTask() or disputeTask() within the deadline
+//  5. On verify: NIGHT releases to human. On dispute: escrow frozen.
+// ══════════════════════════════════════════════════════════════════
+
+export ledger task_title:   Map<Bytes<32>, Bytes<64>>;   // taskId → title
+export ledger task_reward:  Map<Bytes<32>, Uint<64>>;    // taskId → NIGHT µ-units
+export ledger task_bond:    Map<Bytes<32>, Uint<64>>;    // taskId → agent bond
+export ledger task_state:   Map<Bytes<32>, Uint<8>>;     // 0=open,1=accepted,2=submitted,3=verified,4=disputed
+export ledger task_deadline:Map<Bytes<32>, Uint<64>>;    // taskId → deadline block
+
+// Agent who posted the task (ZK commitment — never revealed)
+export ledger task_poster:  Map<Bytes<32>, Bytes<32>>;
+// Human who accepted (ZK commitment)
+export ledger task_worker:  Map<Bytes<32>, Bytes<32>>;
+// Proof submission hash
+export ledger proof_hash:   Map<Bytes<32>, Bytes<32>>;
+
+// NIGHT balances (claimable by commitment)
+export ledger pending_reward: Map<Bytes<32>, Uint<64>>; // workerCommit → claimable
+
+// Counters
+export ledger total_tasks:     Counter;
+export ledger total_completed: Counter;
+export ledger total_night_paid: Map<Bytes<32>, Uint<64>>; // key "paid"
+
+// Witnesses
+witness localSecretKey(): Bytes<32>;
+
+circuit callerCommitment(): Bytes<32> {
+  const sk = localSecretKey();
+  return persistentHash<Vector<2, Bytes<32>>>([kernel.self().bytes, sk]);
+}
+
+export circuit postTask(
+  taskId:   Bytes<32>,
+  title:    Bytes<64>,
+  reward:   Uint<64>,
+  bond:     Uint<64>,
+  deadline: Uint<64>
+): Void {
+  assert(!task_state.member(taskId), "task already exists");
+  assert(reward >= 1_000_000, "minimum reward 1 NIGHT");
+  assert(bond   >= 5_000_000, "minimum bond 5 NIGHT");
+
+  task_title.insert(taskId,    title);
+  task_reward.insert(taskId,   reward);
+  task_bond.insert(taskId,     bond);
+  task_state.insert(taskId,    0);
+  task_deadline.insert(taskId, deadline);
+  task_poster.insert(taskId,   callerCommitment());
+  total_tasks.increment(1);
+}
+
+export circuit acceptTask(taskId: Bytes<32>): Void {
+  const state = task_state.lookup(taskId);
+  assert(state == 0, "task not available");
+  task_state.insert(taskId, 1);
+  task_worker.insert(taskId, callerCommitment());
+}
+
+export circuit submitProof(taskId: Bytes<32>, proofCommit: Bytes<32>): Void {
+  const state  = task_state.lookup(taskId);
+  const worker = callerCommitment();
+  assert(state == 1, "task not accepted");
+  assert(task_worker.lookup(taskId) == worker, "not your task");
+  task_state.insert(taskId, 2);
+  proof_hash.insert(taskId, proofCommit);
+}
+
+export circuit verifyTask(taskId: Bytes<32>): Void {
+  const state  = task_state.lookup(taskId);
+  const poster = callerCommitment();
+  assert(state == 2, "proof not submitted");
+  assert(task_poster.lookup(taskId) == poster, "only poster can verify");
+
+  const reward = task_reward.lookup(taskId);
+  const worker = task_worker.lookup(taskId);
+  const cur = pending_reward.member(worker) ? pending_reward.lookup(worker) : 0;
+  pending_reward.insert(worker, cur + reward);
+
+  task_state.insert(taskId, 3);
+  total_completed.increment(1);
+  const paid = pending_reward.member(pad(32,"paid")) ? pending_reward.lookup(pad(32,"paid")) : 0;
+  pending_reward.insert(pad(32,"paid"), paid + reward);
+}
+
+export circuit disputeTask(taskId: Bytes<32>): Void {
+  const state  = task_state.lookup(taskId);
+  const poster = callerCommitment();
+  assert(state == 2, "proof not submitted");
+  assert(task_poster.lookup(taskId) == poster, "only poster can dispute");
+  task_state.insert(taskId, 4);
+}
+
+export circuit claimReward(): Uint<64> {
+  const worker = callerCommitment();
+  const amount = pending_reward.member(worker) ? pending_reward.lookup(worker) : 0;
+  assert(amount > 0, "nothing to claim");
+  pending_reward.insert(worker, 0);
+  return amount;
+}
