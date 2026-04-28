@@ -2,8 +2,27 @@
 
 var walletState = { connected: false, demo: false, address: null };
 
+async function connectLace() {
+  if (typeof nightWallet === 'undefined') { connectDemo(); return; }
+  try {
+    const state = await nightWallet.connect('lace');
+    walletState = { connected: state.connected, demo: state.demo, address: state.address };
+    closeModal('ov-wallet');
+    updateWalletUI();
+    toast(state.demo ? '🎭 Demo mode — no real funds' : '✓ Lace connected', 'success');
+  } catch (err) {
+    toast('Lace not found — using demo mode', 'info');
+    connectDemo();
+  }
+}
+
 function connectDemo() {
-  walletState = { connected: true, demo: true, address: 'mn_addr_preprod1' + Math.random().toString(36).slice(2, 14) };
+  if (typeof nightWallet !== 'undefined') {
+    const state = nightWallet.connect('demo');
+    walletState = { connected: true, demo: true, address: typeof state.then === 'function' ? 'mn_addr_preprod1demo' : state.address };
+  } else {
+    walletState = { connected: true, demo: true, address: 'mn_addr_preprod1' + Math.random().toString(36).slice(2, 14) };
+  }
   closeModal('ov-wallet');
   updateWalletUI();
   toast('🎭 Demo mode — no real funds', 'success');
@@ -11,7 +30,7 @@ function connectDemo() {
 
 function handleWalletClick() {
   if (walletState.connected) {
-    if (confirm('Disconnect?')) { walletState = { connected: false, demo: false, address: null }; updateWalletUI(); }
+    if (confirm('Disconnect wallet?')) { walletState = { connected: false, demo: false, address: null }; updateWalletUI(); }
   } else { openModal('ov-wallet'); }
 }
 
@@ -20,14 +39,19 @@ function updateWalletUI() {
   const lbl = document.getElementById('wallet-label');
   if (!dot || !lbl) return;
   dot.style.background = walletState.connected ? '#00d68f' : '#ef4444';
-  lbl.textContent = walletState.connected ? (walletState.demo ? '🎭 Demo' : walletState.address.slice(0, 14) + '…') : 'Sign in';
+  lbl.textContent = walletState.connected
+    ? (walletState.demo ? '🎭 Demo' : walletState.address.slice(0, 14) + '…')
+    : 'Sign in';
 }
 
-function acceptTask(id) {
+async function acceptTask(id) {
   if (!walletState.connected) { openModal('ov-wallet'); return; }
   _taskState[id] = 'accepted';
   saveTaskState();
-  toast('✓ Task accepted — stake locked on Midnight · complete and submit proof', 'success');
+  try {
+    await apiPost('/api/nightwork/accept', { taskId: id, worker: walletState.address });
+  } catch { /* offline — local state only */ }
+  toast('✓ Task accepted — bond locked on Midnight · complete and submit proof', 'success');
   renderTasks(_activeTab === 'available' ? 'all' : _activeTab);
 }
 
@@ -50,7 +74,7 @@ async function submitTask(id) {
     await apiPost('/api/nightwork/submit', { taskId: id, proof: text, worker: walletState.address });
     toast('✓ Proof submitted — awaiting agent verification', 'success');
   } catch {
-    toast('Proof submitted (simulation mode)', 'info');
+    toast('✓ Proof recorded (offline mode)', 'info');
   }
   _taskState[id] = 'submitted';
   saveTaskState();
@@ -69,9 +93,8 @@ async function postTask() {
 
   const btn = document.getElementById('pt-submit-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Posting…'; }
-
   const circuit = document.getElementById('pt-circuit');
-  if (circuit) { circuit.style.display = 'flex'; }
+  if (circuit) circuit.style.display = 'flex';
 
   const steps = [
     { label: 'Generating ZK commitment for task…', ms: 800 },
@@ -79,20 +102,16 @@ async function postTask() {
     { label: 'Publishing task to Night Work registry…', ms: 700 },
     { label: '✓ Task live — humans can accept', ms: 0 },
   ];
-
-  if (circuit) {
-    circuit.innerHTML = steps.map((s,i) =>
-      `<div id="ptc-${i}"><span class="ct-dot wait" id="ptd-${i}"></span>${s.label}</div>`).join('');
-  }
+  if (circuit) circuit.innerHTML = steps.map((s,i) => `<div id="ptc-${i}"><span class="ct-dot wait" id="ptd-${i}"></span>${s.label}</div>`).join('');
 
   let i = 0;
-  function next() {
-    if (i > 0) {
-      const pd = document.getElementById(`ptd-${i-1}`);
-      if (pd) pd.className = 'ct-dot done';
-    }
+  async function next() {
+    if (i > 0) { const pd = document.getElementById(`ptd-${i-1}`); if (pd) pd.className = 'ct-dot done'; }
     if (i >= steps.length) {
-      try { apiPost('/api/nightwork/post', { title, desc, reward, deadline, bond, poster: walletState.address }); } catch {}
+      try {
+        const result = await apiPost('/api/nightwork/post', { title, desc, reward, deadline, bond, poster: walletState.address });
+        if (result.task) { _liveTasks.unshift(result.task); }
+      } catch { /* offline */ }
       if (btn) { btn.disabled = false; btn.textContent = '⊘ Post task →'; }
       toast(`✓ "${title}" posted for ${reward} NIGHT`, 'success');
       switchTab('available');
@@ -112,13 +131,12 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
   const t = document.getElementById(`tab-${tab}`);
   if (t) t.classList.add('active');
-  const views = ['available', 'my-tasks', 'post'];
-  views.forEach(v => {
+  ['available','my-tasks','post'].forEach(v => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = v === tab ? 'block' : 'none';
   });
-  if (tab === 'available') renderTasks('all');
-  if (tab === 'my-tasks') renderMyTasks();
+  if (tab === 'available') { loadTasks('all').then(() => renderTasks('all')); }
+  if (tab === 'my-tasks')  renderMyTasks();
 }
 
 function renderMyTasks() {
@@ -130,7 +148,7 @@ function renderMyTasks() {
     return;
   }
   grid.innerHTML = accepted.map(([id, status]) => {
-    const t = SEED_TASKS.find(x => x.id === id);
+    const t = _liveTasks.find(x => x.id === id);
     if (!t) return '';
     return `<div class="nw-task ${status}">
       <div class="nw-task-icon">${t.icon}</div>
@@ -142,7 +160,7 @@ function renderMyTasks() {
       <button class="nw-task-btn${status === 'submitted' ? ' submitted' : ''}" onclick="${status === 'accepted' ? `showProofForm('${id}')` : ''}" ${status === 'submitted' ? 'disabled' : ''}>
         ${status === 'submitted' ? '✓ Submitted' : 'Submit proof'}
       </button>
-      <div class="nw-task-proof ${status === 'accepted' ? 'show' : ''}" id="nw-proof-${id}">
+      <div class="nw-task-proof${status === 'accepted' ? ' show' : ''}" id="nw-proof-${id}">
         <div id="proof-form-${id}"></div>
       </div>
     </div>`;
@@ -156,10 +174,8 @@ function toast(msg, type = 'info') {
   const wrap = document.getElementById('toast-wrap');
   if (!wrap) return;
   const t = document.createElement('div');
-  t.className = `toast ${type}`;
-  t.textContent = msg;
-  wrap.appendChild(t);
-  setTimeout(() => t.remove(), 3500);
+  t.className = `toast ${type}`; t.textContent = msg;
+  wrap.appendChild(t); setTimeout(() => t.remove(), 3500);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
