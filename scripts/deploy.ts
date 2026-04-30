@@ -35,13 +35,13 @@ import {
 import * as ledger from '@midnight-ntwrk/ledger-v7';
 
 globalThis.WebSocket = WebSocket as any;
-setNetworkId('preprod');
+setNetworkId((process.env.MIDNIGHT_NETWORK ?? 'preprod') as any);
 
 const CONFIG = {
-  indexer:     'https://indexer.preprod.midnight.network/api/v4/graphql',
-  indexerWS:   'wss://indexer.preprod.midnight.network/api/v4/graphql/ws',
+  indexer:     process.env.INDEXER_URI     ?? 'https://indexer.preprod.midnight.network/api/v4/graphql',
+  indexerWS:   process.env.INDEXER_WS_URI  ?? 'wss://indexer.preprod.midnight.network/api/v4/graphql/ws',
   proofServer: process.env.PROOF_SERVER_URI ?? 'http://127.0.0.1:6300',
-  node:        'https://rpc.preprod.midnight.network',
+  node:        process.env.NODE_URI         ?? 'https://rpc.preprod.midnight.network',
 };
 
 const ZK_CONFIG_PATH = path.resolve(import.meta.dirname, '..', 'contracts', 'managed', 'night-work');
@@ -67,8 +67,8 @@ async function buildWallet(seed: string) {
 }
 
 async function main() {
-  const seed = process.env.AGENT_SEED;
-  if (!seed) throw new Error('Set AGENT_SEED env var (64-char hex)');
+  const seed = process.env.AGENT_SEED ?? process.env.WALLET_SEED;
+  if (!seed) throw new Error('Set AGENT_SEED or WALLET_SEED env var (64-char hex)');
 
   console.log('\n🚀 Deploying NightWork to Midnight Preprod...\n');
   const ctx = await buildWallet(seed);
