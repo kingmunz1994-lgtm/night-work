@@ -33,6 +33,7 @@ import {
   UnshieldedWallet,
 } from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
 import * as ledger from '@midnight-ntwrk/ledger-v7';
+import * as ledger8 from '@midnight-ntwrk/ledger-v8';
 
 globalThis.WebSocket = WebSocket as any;
 setNetworkId((process.env.MIDNIGHT_NETWORK ?? 'preprod') as any);
@@ -45,6 +46,37 @@ const CONFIG = {
 };
 
 const ZK_CONFIG_PATH = path.resolve(import.meta.dirname, '..', 'contracts', 'managed', 'night-work');
+
+
+// ── Ledger v7/v8 WASM bridge ─────────────────────────────────────────────────
+// wallet-sdk-* v1.0.0 uses ledger-v7; midnight-js-contracts@4.0.4 uses ledger-v8.
+// Without this, deployContract() throws a WASM _assertClass error.
+let _bridgeApplied = false;
+function applyLedgerBridge(): void {
+  if (_bridgeApplied) return;
+  _bridgeApplied = true;
+  const V7LP  = (ledger as any).LedgerParameters;
+  const V7Tx  = (ledger as any).Transaction;
+  const V8LP  = ledger8.LedgerParameters;
+  const V8Tx  = (ledger8.Transaction as any);
+  const origFWM = V8Tx.prototype.feesWithMargin;
+  V8Tx.prototype.feesWithMargin = function(params: any, n: any) {
+    if (params instanceof V7LP) return origFWM.call(this, V8LP.deserialize(params.serialize()), n);
+    return origFWM.call(this, params, n);
+  };
+  const origMerge = V8Tx.prototype.merge;
+  V8Tx.prototype.merge = function(other: any) {
+    if (other instanceof V7Tx) return origMerge.call(this, V8Tx.deserialize('signature', 'proof', 'binding', other.serialize()));
+    return origMerge.call(this, other);
+  };
+}
+
+
+const dustBal = (s: any): bigint =>
+  (s?.dust?.availableCoins ?? []).reduce((sum: bigint, c: any) => sum + (c.value ?? 0n), 0n);
+
+const readyFilter = (s: any): boolean =>
+  (s.unshielded?.progress?.isCompleteWithin?.(50n) ?? false) || dustBal(s) > 0n;
 
 async function buildWallet(seed: string) {
   const hd = HDWallet.fromSeed(Buffer.from(seed, 'hex'));
@@ -74,8 +106,8 @@ async function main() {
   const ctx = await buildWallet(seed);
   console.log(`   Deployer: ${ctx.keystore.getBech32Address()}`);
 
-  console.log('   Syncing wallet...');
-  await Rx.firstValueFrom(ctx.wallet.state().pipe(Rx.filter((s: any) => s.isSynced)));
+  console.log('   Syncing wallet (waiting for unshielded, ~30s)...');
+  await Rx.firstValueFrom(ctx.wallet.state().pipe(Rx.filter(readyFilter)));
   console.log('   ✅ Synced\n');
 
   const ContractModule = await import(path.join(ZK_CONFIG_PATH, 'contract', 'index.js'));
