@@ -7,7 +7,7 @@
     "dev": "npx serve public -p 3003",
     "compile": "compact compile contracts/NightWork.compact contracts/managed/night-work",
     "deploy": "node --env-file=.env --import tsx scripts/deploy.ts",
-    "proof-server": "docker run -p 6300:6300 midnightntwrk/proof-server:7.0.0 -- midnight-proof-server -v"
+    "proof-server": "docker run -p 6300:6300 midnightntwrk/proof-server:8.0.3 -- midnight-proof-server -v"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-js": "2.5.0",
