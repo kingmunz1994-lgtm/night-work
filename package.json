@@ -38,7 +38,7 @@
     "node": ">=18.0.0"
   },
   "overrides": {
-    "@midnight-ntwrk/compact-js": "2.4.0",
+    "@midnight-ntwrk/compact-js": "2.5.0",
     "@midnight-ntwrk/ledger-v7": "7.0.2",
     "smoldot": "npm:@aspect-build/empty@0.0.0",
     "@midnight-ntwrk/compact-runtime": "0.15.0"
