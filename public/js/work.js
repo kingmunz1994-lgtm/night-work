@@ -65,6 +65,7 @@ async function acceptTask(id) {
     await apiPost('/api/nightwork/accept', { taskId: id, worker: walletState.address });
   } catch { /* offline — local state only */ }
   toast('✓ Task accepted — bond locked on Midnight · complete and submit proof', 'success');
+  recordAction(20);
   renderTasks(_activeTab === 'available' ? 'all' : _activeTab);
 }
 
@@ -128,6 +129,7 @@ async function postTask() {
       } catch { /* offline */ }
       if (btn) { btn.disabled = false; btn.textContent = '⊘ Post task →'; }
       toast(`✓ "${title}" posted for ${reward} NIGHT`, 'success');
+      recordAction(25);
       switchTab('available');
       return;
     }
