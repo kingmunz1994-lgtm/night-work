@@ -35,6 +35,19 @@ export ledger total_tasks:      Counter;
 export ledger total_completed:  Counter;
 export ledger total_night_paid: Map<Bytes<32>, Uint<64>>; // key "paid"
 
+// ── Batch payroll ledger ──────────────────────────────────────────────────────
+// One employer → many workers. Workers claim privately per-batch.
+// Flow: createPayrollBatch → addPayrollEntry (×N) → finalizePayroll → workers claimPayroll
+
+export ledger payroll_employer: Map<Bytes<32>, Bytes<32>>;  // batchId → employer commitment
+export ledger payroll_declared: Map<Bytes<32>, Uint<64>>;   // batchId → total NIGHT locked
+export ledger payroll_running:  Map<Bytes<32>, Uint<64>>;   // batchId → running sum of entries added
+export ledger payroll_state:    Map<Bytes<32>, Uint<8>>;    // 0=building 1=finalized 2=cancelled
+// Entry key = persistentHash([batchId, workerCommitment]) → amount (0 = claimed)
+export ledger payroll_entry:    Map<Bytes<32>, Uint<64>>;
+export ledger total_payroll_batches: Counter;
+export ledger total_payroll_night:   Map<Bytes<32>, Uint<64>>; // key "total"
+
 // Witnesses
 witness localSecretKey(): Bytes<32>;
 
@@ -123,5 +136,82 @@ export circuit claimReward(): Uint<64> {
   const amount = pending_reward.member(wCom) ? pending_reward.lookup(wCom) : (0 as Uint<64>);
   assert(amount > 0, "nothing to claim");
   pending_reward.insert(wCom, 0 as Uint<64>);
+  return amount;
+}
+
+// ── Batch payroll circuits ────────────────────────────────────────────────────
+
+// Employer declares a batch and locks the total NIGHT amount upfront.
+export circuit createPayrollBatch(batchId: Bytes<32>, declaredTotal: Uint<64>): Boolean {
+  const id   = disclose(batchId);
+  const tot  = disclose(declaredTotal);
+  const eCom = disclose(callerCommitment());
+  assert(!payroll_employer.member(id), "batch already exists");
+  assert(tot >= 1000000, "minimum 1 NIGHT total");
+  payroll_employer.insert(id, eCom);
+  payroll_declared.insert(id, tot);
+  payroll_running.insert(id, 0 as Uint<64>);
+  payroll_state.insert(id, 0);
+  total_payroll_batches.increment(1);
+  return true;
+}
+
+// Employer adds one entry per worker. Worker commitment is shared by worker off-chain.
+// Entry key = hash(batchId, workerCommitment) — prevents duplicates, enables private claim.
+export circuit addPayrollEntry(
+  batchId:          Bytes<32>,
+  workerCommitment: Bytes<32>,
+  amount:           Uint<64>
+): Boolean {
+  const id       = disclose(batchId);
+  const wCom     = disclose(workerCommitment);
+  const amt      = disclose(amount);
+  const eCom     = disclose(callerCommitment());
+  assert(payroll_state.lookup(id) == 0,             "batch not open for entries");
+  assert(payroll_employer.lookup(id) == eCom,        "only employer can add entries");
+  assert(amt >= 1000000,                             "minimum 1 NIGHT per entry");
+  const entryKey = disclose(persistentHash<Vector<2, Bytes<32>>>([id, wCom]));
+  assert(!payroll_entry.member(entryKey),            "worker already in batch");
+  payroll_entry.insert(entryKey, amt);
+  const prev = payroll_running.lookup(id);
+  payroll_running.insert(id, (prev + amt) as Uint<64>);
+  return true;
+}
+
+// Employer finalizes. Running sum must equal declared total — prevents stranded funds.
+export circuit finalizePayroll(batchId: Bytes<32>): Boolean {
+  const id   = disclose(batchId);
+  const eCom = disclose(callerCommitment());
+  assert(payroll_state.lookup(id) == 0,                                    "batch not building");
+  assert(payroll_employer.lookup(id) == eCom,                               "only employer");
+  assert(payroll_running.lookup(id) == payroll_declared.lookup(id),         "entries do not sum to declared total");
+  payroll_state.insert(id, 1);
+  const key  = pad(32, "total");
+  const prev = total_payroll_night.member(key) ? total_payroll_night.lookup(key) : (0 as Uint<64>);
+  total_payroll_night.insert(key, (prev + payroll_declared.lookup(id)) as Uint<64>);
+  return true;
+}
+
+// Employer cancels before finalize. NIGHT unlocked at chain level; entries become inert.
+export circuit cancelPayroll(batchId: Bytes<32>): Boolean {
+  const id   = disclose(batchId);
+  const eCom = disclose(callerCommitment());
+  assert(payroll_state.lookup(id) == 0, "can only cancel a building batch");
+  assert(payroll_employer.lookup(id) == eCom, "only employer");
+  payroll_state.insert(id, 2);
+  return true;
+}
+
+// Worker claims their payout from a finalized batch.
+// Private: only the worker who holds the matching secret key can claim their entry.
+export circuit claimPayroll(batchId: Bytes<32>): Uint<64> {
+  const id       = disclose(batchId);
+  assert(payroll_state.lookup(id) == 1, "batch not finalized");
+  const wCom     = disclose(callerCommitment());
+  const entryKey = disclose(persistentHash<Vector<2, Bytes<32>>>([id, wCom]));
+  assert(payroll_entry.member(entryKey), "not in this batch");
+  const amount   = payroll_entry.lookup(entryKey);
+  assert(amount > (0 as Uint<64>), "already claimed");
+  payroll_entry.insert(entryKey, 0 as Uint<64>);
   return amount;
 }
